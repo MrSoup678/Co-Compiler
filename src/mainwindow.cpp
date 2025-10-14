@@ -5,6 +5,9 @@
 #include "confighandler.h"
 #include "enums.h"
 #include "widgets/variableinputdialog.h"
+#include "widgets/luasyntaxhighlighting.h"
+#define SOL_ALL_SAFETIES_ON 1
+#include <sol/sol.hpp>
 #include <QDockWidget>
 #include <QGridLayout>
 #include <QLabel>
@@ -34,6 +37,8 @@
 #include <QCheckBox>
 #include <QSystemTrayIcon>
 #include <QButtonGroup>
+#include <variant>
+#include <any>
 
 constexpr auto CONFIG_SAVE_FILTER = "Configuration File (cmdseq.wc cconfig.json);;Hammer Config (cmdseq.wc);;Cocompiler Config (cconfig.json);;All files (*.*)";
 
@@ -104,10 +109,8 @@ CMainWindow::CMainWindow() : QMainWindow(nullptr)
     pSpecialComboBox->addItem("Select Filename As Variable", CC_SPECIAL_SET_LOCAL_VARIABLE_FILENAME);
     pSpecialComboBox->addItem("Select Directory As Variable", CC_SPECIAL_SET_LOCAL_VARIABLE_DIRECTORY);
     pSpecialComboBox->addItem("Clear Variable", CC_SPECIAL_CLEAR_LOCAL_VARIABLE);
-    pSpecialComboBox->addItem("Fatal Assert", CC_SPECIAL_FATAL_ASSERT);
-    pSpecialComboBox->addItem("Warning Assert", CC_SPECIAL_WARNING_ASSERT);
+    pSpecialComboBox->addItem("Script", CC_SPECIAL_SCRIPT);
     pSpecialComboBox->addItem("Clear Console", CC_SPECIAL_CLEAR_CONSOLE);
-    pSpecialComboBox->addItem("Log", CC_SPECIAL_LOG);
 
     pProcessLayout->addWidget(pSpecialComboBox, 0 ,0, Qt::AlignTop);
 
@@ -120,6 +123,9 @@ CMainWindow::CMainWindow() : QMainWindow(nullptr)
     auto pParameterLabel = new QLabel("Parameters:",pMainWidget);
     pProcessLayout->addWidget(pParameterLabel, 3 ,0, Qt::AlignTop);
     pParameterTextEdit = new QTextEdit(pMainWidget);
+
+    m_pLuaHighlighting = new LuaSyntaxHighlighter(pParameterTextEdit->document());
+
     pProcessLayout->addWidget(pParameterTextEdit, 4 ,0, Qt::AlignTop);
 
     pContinueAfterProcessCheckBox = new QCheckBox("Wait for keypress when done compiling.", pMainWidget);
@@ -169,7 +175,7 @@ CMainWindow::CMainWindow() : QMainWindow(nullptr)
     connect(pCloseButton, &QPushButton::clicked, this, &CMainWindow::close);
     connect(pEditVariablesAction, &QAction::triggered, this, &CMainWindow::EditVariables);
     connect(pConsoleTextColorAction, &QAction::triggered, this, &CMainWindow::ChangeConsoleTextColor);
-    connect(pConsoleBackgroundColorAction, &QAction::triggered, this, &CMainWindow::ChangeCOnsoleBackgroundColor);
+    connect(pConsoleBackgroundColorAction, &QAction::triggered, this, &CMainWindow::ChangeConsoleBackgroundColor);
     connect(pConfigurationComboBox, &QComboBox::currentTextChanged, this, &CMainWindow::ChangeConfigurations);
     connect(pRunCommandsList, &QListWidget::currentItemChanged, this, &CMainWindow::RunConfigurationChanged);
     connect(pCommandLineEdit, &QLineEdit::textEdited, this, &CMainWindow::CommandLineTextChanged);
@@ -228,6 +234,17 @@ void CMainWindow::fillConfigurations(const QJsonDocument &doc) {
                                                    objectContent["special"].toInt(), objectContent["no_wait"].toBool());
 
             item->setCheckState( objectContent["enabled"].toBool() ? Qt::Checked : Qt::Unchecked);
+
+            if(objectContent["special"].toInt() != SPECIAL_EXEC) {
+                int loc = pSpecialComboBox->findData(objectContent["special"].toInt());
+                item->changeCommand(pSpecialComboBox->itemText(loc));
+                item->setData(Qt::BackgroundRole, QColor(255, 229, 180, 70));
+
+                if(objectContent["special"].toInt() == CC_SPECIAL_SCRIPT)
+                    m_pLuaHighlighting->setEnabled(true);
+            } else
+                m_pLuaHighlighting->setEnabled(false);
+
             items.push_back(item);
         }
         m_Configurations.insert(key,items);
@@ -254,7 +271,7 @@ void CMainWindow::SaveConfig() {
             QJsonObject commandObject;
             commandObject.insert("enabled", command->checkState() == Qt::Checked);
             commandObject.insert("command", command->getCommand());
-            commandObject.insert("parameters",command->getArguments());
+            commandObject.insert("parameters",command->getArguments().toLatin1().data());
             commandObject.insert("special",command->getSpecial());
             commandObject.insert("ensured", false);
             commandObject.insert("ensure_file", "");
@@ -317,6 +334,7 @@ void CMainWindow::runProcessQueue()
     if(m_QueueProcesses.isEmpty()) {
         pCompileButton->setDisabled(false);
         pTerminateButton->setDisabled(true);
+        m_RuntimeVariables.empty();
         m_pSystemTrayIcon->show();
         m_pSystemTrayIcon->showMessage("Process Complete!", "The process has been completed.", style()->standardIcon(QStyle::SP_MessageBoxWarning));
         return;
@@ -329,7 +347,8 @@ void CMainWindow::runProcessQueue()
 
     if(command->getSpecial() != SPECIAL_EXEC)
     {
-        runSpecialCases(command->getArguments().split(reg).replaceInStrings("\"",""), command->getSpecial());
+        runSpecialCases(command->getArguments().split(reg).replaceInStrings("\"", ""), command->getArguments(),
+                        command->getSpecial());
         return runProcessQueue();
     }
 
@@ -338,6 +357,7 @@ void CMainWindow::runProcessQueue()
     QMap<QString, QString> replacements;
     replacements.insert(m_Variables);
     replacements.insert(m_LocalVariables);
+    replacements.insert(m_RuntimeVariables);
 
     auto commandStr = command->getCommand();
     auto argumentsStr = command->getArguments();
@@ -348,8 +368,6 @@ void CMainWindow::runProcessQueue()
         argumentsStr = argumentsStr.replace(QRegularExpression(QRegularExpression::escape(key)), replacements[key]);
     }
 
-    qInfo() << argumentsStr;
-
     m_pCurrentRunningProcess->setProgram(commandStr);
     m_pCurrentRunningProcess->setArguments(argumentsStr.split(reg).replaceInStrings("\"", ""));
     m_pCurrentRunningProcess->setProcessChannelMode(QProcess::MergedChannels);
@@ -359,14 +377,14 @@ void CMainWindow::runProcessQueue()
         pConsoleOutput->putPlainData(m_pCurrentRunningProcess->readAll());
     });
 
-    QElapsedTimer* timer = new QElapsedTimer();
-    connect(m_pCurrentRunningProcess, &QProcess::started, m_pCurrentRunningProcess, [timer]{
-        qInfo() << "started";
+    timer = new QElapsedTimer();
+
+    connect(m_pCurrentRunningProcess, &QProcess::started, m_pCurrentRunningProcess, [&]{
         timer->start();
     });
-    connect(m_pCurrentRunningProcess, &QProcess::finished, m_pCurrentRunningProcess, [&, command, timer](int exitCode, QProcess::ExitStatus exitStatus){
+    connect(m_pCurrentRunningProcess, &QProcess::finished, m_pCurrentRunningProcess, [&, command](int exitCode, QProcess::ExitStatus exitStatus){
         qDebug() << timer->elapsed() / 1000.0f;
-        delete timer;
+        timer->restart();
 
         delete m_pCurrentRunningProcess;
         m_pCurrentRunningProcess = nullptr;
@@ -402,7 +420,31 @@ void CMainWindow::runProcessQueue()
 
 }
 
-void CMainWindow::runSpecialCases(const QStringList &arguments, int special)
+int handleLuaException(lua_State* L, sol::optional<const std::exception&> maybe_exception, sol::string_view description)
+{
+    // L is the lua state, which you can wrap in a state_view if necessary
+    // maybe_exception will contain exception, if it exists
+    // description will either be the what() of the exception or a description saying that we hit the general-case catch(...)
+    std::cout << "An exception occurred in a function, here's what it says ";
+    if (maybe_exception) {
+        std::cout << "(straight from the exception): ";
+        const std::exception& ex = *maybe_exception;
+        std::cout << ex.what() << std::endl;
+    }
+    else {
+        std::cout << "(from the description parameter): ";
+        std::cout.write(description.data(), static_cast<std::streamsize>(description.size()));
+        std::cout << std::endl;
+    }
+
+    // you must push 1 element onto the stack to be
+    // transported through as the error object in Lua
+    // note that Lua -- and 99.5% of all Lua users and libraries -- expects a string
+    // so we push a single string (in our case, the description of the error)
+    return sol::stack::push(L, description);
+}
+
+void CMainWindow::runSpecialCases(const QStringList &arguments, const QString &raw_args, int special)
 {
     switch(special)
     {
@@ -515,18 +557,215 @@ void CMainWindow::runSpecialCases(const QStringList &arguments, int special)
             QFile::remove(arguments[0]);
             return;
 
-        case CC_SPECIAL_WARNING_ASSERT:
-        case CC_SPECIAL_FATAL_ASSERT:
+        case CC_SPECIAL_SCRIPT:
             if(arguments.isEmpty())
                 return;
 
-            for(const auto &arg : arguments)
-                if(pConsoleOutput->toPlainText().contains(arg))
+            {
+                bool isFatal = false;
+                sol::state lua;
+                lua.open_libraries(sol::lib::base, sol::lib::string);
+
+                lua.set_exception_handler(&handleLuaException);
+
+                auto cprint= [&]( sol::this_state ts, sol::variadic_args args)
                 {
-                    pConsoleOutput->putHTMLData("<br><p style=\"color:" + (special == CC_SPECIAL_FATAL_ASSERT ? m_errorColor : m_warningColor).toLatin1() + "\">" + ("ASSERT FAILED! " + arg + " Found!").toLatin1() +"</p><br>");
-                    if(special == CC_SPECIAL_FATAL_ASSERT)
+                    sol::variadic_results r;
+                    QString value = "";
+                    for(auto arg : args)
+                    {
+                        QString tmp;
+                        switch(arg.get_type())
+                        {
+                            case sol::type::none:
+                            case sol::type::lua_nil:
+                                tmp += "nil";
+                                break;
+                            case sol::type::string:
+                                tmp += arg.as<std::string>().c_str();
+                                break;
+                            case sol::type::number:
+                                tmp = QString::number(arg.as<int>());
+                                break;
+                            case sol::type::boolean:
+                                tmp = arg.as<bool>() ? "true" : "false";
+                                break;
+                            case sol::type::thread:
+                            case sol::type::function:
+                            case sol::type::userdata:
+                            case sol::type::lightuserdata:
+                            case sol::type::table:
+                            case sol::type::poly:
+                                break;
+                        }
+
+                        if(!tmp.isEmpty())
+                            value += tmp;
+
+                    }
+                    pConsoleOutput->putHTMLData(
+                            ("<br>"+value+"<br>").toLatin1());
+                    r.push_back({ ts, sol::in_place, value});
+
+                    return r;
+                };
+
+                lua.set_function("console_print", sol::overload( cprint));
+
+                  auto warn = [&]( sol::this_state ts, sol::variadic_args args)
+                  {
+                      sol::variadic_results r;
+
+                      bool boolval = true;
+
+                      for(auto arg : args)
+                      {
+                          switch(arg.get_type())
+                          {
+                              case sol::type::string:
+                              {
+                                  boolval = boolval && !arg.as<std::string>().empty() || arg.as<std::string>() != "0" ||
+                                                 arg.as<std::string>() != "false";
+                              }
+                                  break;
+                              case sol::type::number:
+                                  boolval = boolval && arg.as<int>() != 0;
+                                  break;
+
+                              case sol::type::boolean:
+                                  boolval = boolval && arg.as<bool>();
+                                  break;
+                              case sol::type::none:
+                              case sol::type::lua_nil:
+                              case sol::type::thread:
+                              case sol::type::function:
+                              case sol::type::userdata:
+                              case sol::type::lightuserdata:
+                              case sol::type::table:
+                              case sol::type::poly:
+                                  boolval = false;
+                                  break;
+                          }
+
+
+//
+                      }
+
+                      r.push_back({ts, sol::in_place, boolval});
+
+                      if(!boolval)
+                        pConsoleOutput->putHTMLData("<br><p style=\"color:" + ( m_warningColor).toLatin1() + "\">" + ("WARNING ASSERT FAILED!") + "</p><br>");
+
+                      return r;
+                  };
+
+                  lua.set_function("warn_assert", sol::overload( warn ));
+
+                  lua.set_function("console_output", [&]{
+                      return pConsoleOutput->toPlainText().toStdString();
+                  });
+
+                auto fatal = [&]( sol::this_state ts, sol::variadic_args args)
+                {
+                    sol::variadic_results r;
+
+                    bool boolval = true;
+
+                    for(auto arg : args)
+                    {
+                        switch(arg.get_type())
+                        {
+                            case sol::type::string:
+                            {
+                                boolval = boolval && !arg.as<std::string>().empty() || arg.as<std::string>() != "0" ||
+                                          arg.as<std::string>() != "false";
+                            }
+                                break;
+                            case sol::type::number:
+                                boolval = boolval && arg.as<int>() != 0;
+                                break;
+
+                            case sol::type::boolean:
+                                boolval = boolval && arg.as<bool>();
+                                break;
+                            case sol::type::none:
+                            case sol::type::lua_nil:
+                            case sol::type::thread:
+                            case sol::type::function:
+                            case sol::type::userdata:
+                            case sol::type::lightuserdata:
+                            case sol::type::table:
+                            case sol::type::poly:
+                                boolval = false;
+                                break;
+                        }
+
+
+//
+                    }
+
+                    r.push_back({ts, sol::in_place, boolval});
+
+                    if(!boolval) {
+                        pConsoleOutput->putHTMLData("<br><p style=\"color:" + (m_errorColor).toLatin1() + "\">" +
+                                                    ("FATAL ASSERT FAILED!") + "</p><br>");
                         this->m_QueueProcesses.clear();
+                        isFatal = true;
+                    }
+
+                    return r;
+                };
+
+                lua.set_function("fatal_assert", sol::overload( fatal ));
+
+                lua.set_function("set_runtime_variable", [&](const std::string& key, const std::string& value){
+                    m_RuntimeVariables[key.c_str()] = value.c_str();
+                });
+
+                lua.set_function("set_local_variable", [&](const std::string& key, const std::string& value){
+                    m_LocalVariables[key.c_str()] = value.c_str();
+                });
+
+                lua.set_function("get_global_variable", [&](const std::string& key){
+                    return m_Variables[key.c_str()].toStdString();
+                });
+
+                lua.set_function("get_runtime_variable", [&](const std::string& key){
+                    return m_RuntimeVariables[key.c_str()].toStdString();
+                });
+
+                lua.set_function("get_local_variable", [&](const std::string& key){
+                    return m_LocalVariables[key.c_str()].toStdString();
+                });
+
+                lua.set_function("get_variable", [&](const std::string& key){
+                    if(m_RuntimeVariables.contains(key.c_str()))
+                        return m_RuntimeVariables[key.c_str()].toStdString();
+                    if(m_LocalVariables.contains(key.c_str()))
+                        return m_LocalVariables[key.c_str()].toStdString();
+                    if(m_Variables.contains(key.c_str()))
+                        return m_Variables[key.c_str()].toStdString();
+                    return std::string{};
+                });
+
+                lua.set_function("set_global_variable", [&](const std::string& key, const std::string& value){
+                    m_Variables[key.c_str()] = value.c_str();
+                });
+
+                sol::protected_function_result pfr = lua.safe_script(raw_args.toStdString(), &sol::script_pass_on_error);
+
+                if(isFatal) {
+                    return;
                 }
+
+                if(!pfr.valid()) {
+                    sol::error err = pfr;
+                    QMessageBox::warning(this, "LUA FAILED", "The lua script failed to execute.\n" + QString(err.what()));
+                    this->m_QueueProcesses.clear();
+                    return;
+                }
+
+            }
 
             return;
 
@@ -579,7 +818,7 @@ void CMainWindow::ChangeConsoleTextColor()
     colorPicker->open();
 }
 
-void CMainWindow::ChangeCOnsoleBackgroundColor()
+void CMainWindow::ChangeConsoleBackgroundColor()
 {
         auto colorPicker = new QColorDialog(this);
 
@@ -613,6 +852,15 @@ void CMainWindow::ChangeSpecialComboBox() {
     if(!processItem)
         return;
     processItem->changeSpecial(pSpecialComboBox->currentData().toInt());
+    if(pSpecialComboBox->currentData().toInt() != SPECIAL_EXEC) {
+        processItem->changeCommand(pSpecialComboBox->currentText());
+        processItem->setData(Qt::BackgroundRole, QColor(255, 229, 180, 70));
+        if( pSpecialComboBox->currentData().toInt() == CC_SPECIAL_SCRIPT)
+            m_pLuaHighlighting->setEnabled(true);
+    } else {
+        processItem->setData(Qt::BackgroundRole, "");
+        m_pLuaHighlighting->setEnabled(false);
+    }
     pRunCommandsList->currentItemChanged(pRunCommandsList->currentItem(), pRunCommandsList->currentItem());
     this->hasChanges = true;
 
@@ -628,6 +876,17 @@ void CMainWindow::RunConfigurationChanged()
     pContinueAfterProcessCheckBox->setChecked(!processItem->getNoWait());
     int data = pSpecialComboBox->findData(processItem->getSpecial());
     pSpecialComboBox->setCurrentIndex(data);
+
+    if(pSpecialComboBox->currentData().toInt() != SPECIAL_EXEC) {
+        processItem->changeCommand(pSpecialComboBox->currentText());
+        processItem->setData(Qt::BackgroundRole, QColor(255, 229, 180, 70));
+        if(pSpecialComboBox->currentData().toInt() == CC_SPECIAL_SCRIPT)
+            m_pLuaHighlighting->setEnabled(true);
+    } else {
+        m_pLuaHighlighting->setEnabled(false);
+        processItem->setData(Qt::BackgroundRole, "");
+    }
+
     pCommandLineEdit->setDisabled(data != SPECIAL_EXEC);
 }
 
@@ -817,7 +1076,12 @@ void CMainWindow::EditVariables() {
             return;
 
         this->m_Variables.insert(list[0], list[1]);
-        editList->addItem(new CProcessListWidgetItem(list[0], list[1], 0, true));
+
+        auto item = new CProcessListWidgetItem(list[0], list[1], 0, true);
+
+        item->setData(Qt::CheckStateRole, QVariant());
+
+        editList->addItem(item);
 
         hasChanges = true;
 

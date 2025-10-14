@@ -35,13 +35,13 @@ public:
     void changeCommand(const QString& command)
     {
         m_Command = command;
-        this->setText(m_Command + " " + m_Arguments);
+        this->setText((m_Command + " " + m_Arguments).replace("\n",""));
     }
 
     void changeArguments(const QString& arguments)
     {
         m_Arguments = arguments;
-        this->setText(m_Command + " " + m_Arguments);
+        this->setText((m_Command + " " + m_Arguments).replace("\n",""));
     }
 
     void changeSpecial(int special)
@@ -88,12 +88,12 @@ public:
         return m_Arguments;
     }
 
-    int getSpecial()
+    int getSpecial() const
     {
         return m_special;
     }
 
-    bool getNoWait()
+    bool getNoWait() const
     {
         return m_no_wait;
     }

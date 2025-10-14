@@ -14,18 +14,22 @@ class QSystemTrayIcon;
 class QProcess;
 class Console;
 class QGroupBox;
+class QElapsedTimer;
+class LuaSyntaxHighlighter;
 
 class CMainWindow : public QMainWindow {
 
     QMap<QString, QVector<CProcessListWidgetItem*>> m_Configurations;
     QMap<QString, QString> m_Variables;
     QMap<QString, QString> m_LocalVariables;
+    QMap<QString, QString> m_RuntimeVariables;
     QString m_WorkDirectory;
     QString m_errorColor = "#FF0000";
     QString m_warningColor = "#FFFF00";
 
     QVector<CProcessListWidgetItem*> m_QueueProcesses;
 
+    LuaSyntaxHighlighter *m_pLuaHighlighting;
     QSystemTrayIcon* m_pSystemTrayIcon;
     Console *pConsoleOutput;
     QPushButton *pCompileButton;
@@ -46,6 +50,8 @@ class CMainWindow : public QMainWindow {
 
     QProcess *m_pCurrentRunningProcess;
 
+    QElapsedTimer *timer;
+
     public Q_SIGNAL:
         void closed();
 private:
@@ -63,13 +69,13 @@ public:
 
     void runProcessQueue();
 
-    void runSpecialCases(const QStringList &arguments, int special);
+    void runSpecialCases(const QStringList &arguments, const QString &raw_args, int special);
 
     void TerminateCurrentProcess();
 
     void ChangeConsoleTextColor();
 
-    void ChangeCOnsoleBackgroundColor();
+    void ChangeConsoleBackgroundColor();
 
     void ChangeSpecialComboBox();
 

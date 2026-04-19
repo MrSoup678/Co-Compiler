@@ -59,6 +59,7 @@ QJsonDocument CConfigHandler::ConvertBinaryToJSON(const char* data) {
 
     QJsonDocument document;
     QJsonObject configuration;
+    QJsonObject sequenceList;
 
     auto header = reinterpret_cast<const CSHeader*>(data);
     data += sizeof(CSHeader);
@@ -87,10 +88,11 @@ QJsonDocument CConfigHandler::ConvertBinaryToJSON(const char* data) {
             data += sizeof (CSCommand);
         }
 
-        configuration.insert(sequence->csName, commands);
+        sequenceList.insert(sequence->csName, commands);
 
     }
 
+    configuration.insert("sequences",sequenceList);
     document.setObject(configuration);
 
     return document;
@@ -101,11 +103,12 @@ QJsonDocument CConfigHandler::ConvertTextToJSON(const char* data)
     auto config = KeyValueRoot();
     auto err = config.Parse(reinterpret_cast<const char *>(data));
 
-    if(err != KeyValueErrorCode::NO_ERROR)
+    if(err != KeyValueErrorCode::NONE)
         return {};
 
     QJsonDocument jsonConfiguration{};
     QJsonObject jsonConfigObject{};
+    QJsonObject jsonSequenceList{};
 
     if(auto &sequences = config.Get("Command Sequences"); sequences.IsValid())
     {
@@ -130,8 +133,9 @@ QJsonDocument CConfigHandler::ConvertTextToJSON(const char* data)
                 jsonSequenceArray.push_back(jsonSequenceObject);
             }
 
-            jsonConfigObject.insert(sequence.Key().string, jsonSequenceArray);
+            jsonSequenceList.insert(sequence.Key().string, jsonSequenceArray);
         }
+        jsonConfigObject.insert("sequences",jsonSequenceList);
         jsonConfiguration.setObject(jsonConfigObject);
     }
 

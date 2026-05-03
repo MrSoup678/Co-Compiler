@@ -6,6 +6,7 @@
 #include "enums.h"
 #include "widgets/variableinputdialog.h"
 #include "widgets/luasyntaxhighlighting.h"
+#include "widgets/qwcfiledialog.h"
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
 #include <QDockWidget>
@@ -40,7 +41,9 @@
 #include <variant>
 #include <any>
 
-constexpr auto CONFIG_SAVE_FILTER = "Configuration File (cmdseq.wc cconfig.json);;Hammer Config (cmdseq.wc);;Cocompiler Config (cconfig.json);;All files (*.*)";
+constexpr auto CONFIG_LOAD_FILTER = "Configuration File (cmdseq.wc cconfig.json);;Hammer Config (cmdseq.wc);;Cocompiler Config (cconfig.json);;All files (*.*)";
+constexpr auto CONFIG_SAVE_FILTER = "Configuration File (cmdseq.wc cconfig.json);;Hammer Config (cmdseq.wc);;Cocompiler Config (cconfig.json)";
+
 
 CMainWindow::CMainWindow() : QMainWindow(nullptr)
 {
@@ -172,6 +175,7 @@ CMainWindow::CMainWindow() : QMainWindow(nullptr)
 
 
     connect(loadConfigAction, &QAction::triggered, this, &CMainWindow::LoadConfigurationFromFile);
+    connect(exportConfigAction, &QAction::triggered, this, &CMainWindow::ExportConfigurationToFile);
     connect(pCloseButton, &QPushButton::clicked, this, &CMainWindow::close);
     connect(pEditVariablesAction, &QAction::triggered, this, &CMainWindow::EditVariables);
     connect(pConsoleTextColorAction, &QAction::triggered, this, &CMainWindow::ChangeConsoleTextColor);
@@ -254,9 +258,9 @@ void CMainWindow::fillConfigurations(const QJsonDocument &doc) {
     emit pConfigurationComboBox->currentTextChanged(pConfigurationComboBox->currentText());
 }
 
-void CMainWindow::SaveConfig() {
 
-    QJsonDocument file;
+void CMainWindow::emitConfigurations(QJsonDocument &doc) {
+
     QJsonObject fileObject;
 
     QJsonObject configObject;
@@ -298,7 +302,13 @@ void CMainWindow::SaveConfig() {
 
     fileObject.insert("variables", variables);
 
-    file.setObject(fileObject);
+    doc.setObject(fileObject);
+}
+
+void CMainWindow::SaveConfig() {
+
+    QJsonDocument file;
+    emitConfigurations(file);
     auto jsonFile = QFile(QDir::currentPath() + "/cconfig.json");
     jsonFile.open(QFile::WriteOnly);
     jsonFile.write(file.toJson());
@@ -1189,7 +1199,23 @@ void CMainWindow::ChangeConfigurations(const QString &s) {
 
 void CMainWindow::LoadConfigurationFromFile() {
 
-        auto configurationPath = QFileDialog::getOpenFileName(this, tr("Load Config"), "", CONFIG_SAVE_FILTER, nullptr, QFileDialog::DontUseNativeDialog);
+        QString configurationPath;
+        bool wcCSGO;
+    {
+        QWCFileDialog* fileDialog= new QWCFileDialog(this,tr("Load Config"),"",CONFIG_LOAD_FILTER,false);
+        int result = fileDialog->exec();
+        switch (result) {
+
+        case QDialog::Rejected:
+            return;
+        case QDialog::Accepted:
+            configurationPath = fileDialog->selectedFiles().value(0);
+            wcCSGO = fileDialog->wcCSGO;
+            break;
+        }
+        delete fileDialog;
+
+    }
         if (configurationPath.isEmpty()) {
             return;
         }
@@ -1201,12 +1227,11 @@ void CMainWindow::LoadConfigurationFromFile() {
         file.close();
 
         QJsonDocument jsonConfiguration;
-        QJsonObject jsonConfigObject;
 
         if(!configurationPath.endsWith(".json")) {
 
             if (CConfigHandler::IsBinaryWCConfig(fileContents)) {
-                jsonConfiguration = CConfigHandler::ConvertBinaryToJSON(fileContents);
+                jsonConfiguration = CConfigHandler::ConvertBinaryToJSON(fileContents,wcCSGO);
             } else {
                 jsonConfiguration = CConfigHandler::ConvertTextToJSON(
                         fileContents);
@@ -1221,6 +1246,48 @@ void CMainWindow::LoadConfigurationFromFile() {
 
         hasChanges = true;
 }
+
+void CMainWindow::ExportConfigurationToFile() {
+    QString configurationPath;
+    bool shouldOutputWC = false, wcBinary, wcCSGO;
+    {
+        QWCFileDialog* fileDialog= new QWCFileDialog(this,tr("Export Config"),"",CONFIG_SAVE_FILTER,true);
+        fileDialog->setAcceptMode(QFileDialog::AcceptSave);
+        int result = fileDialog->exec();
+        switch (result) {
+
+        case QDialog::Rejected:
+            return;
+        case QDialog::Accepted:
+            configurationPath = fileDialog->selectedFiles().value(0);
+            if(configurationPath.endsWith(".wc")) {
+                shouldOutputWC = true;
+            }
+            wcBinary = fileDialog->wcBinary;
+            wcCSGO = fileDialog->wcCSGO;
+            break;
+        }
+        delete fileDialog;
+
+    }
+    if (configurationPath.isEmpty()) {
+        return;
+    }
+    QJsonDocument jsonConfiguration{};
+    emitConfigurations(jsonConfiguration);
+    auto file = QFile(configurationPath);
+    file.open(QFile::WriteOnly);
+    if (shouldOutputWC) {
+        //pConsoleOutput->putPlainData("\n\n ERROR: WC export currently not implemented.");
+        std::unique_ptr<QByteArray> holder = CConfigHandler::ExportToWCConfig(jsonConfiguration,!wcBinary,wcCSGO);
+        file.write(*holder);
+    } else {
+        file.write(jsonConfiguration.toJson());
+    }
+    file.flush();
+    file.close();
+}
+
 
 void CMainWindow::CompileButtonPressed() {
 

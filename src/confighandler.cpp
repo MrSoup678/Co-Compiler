@@ -219,10 +219,27 @@ std::unique_ptr<QByteArray> CConfigHandler::ExportToWCConfig(const QJsonDocument
     std::unique_ptr<QByteArray> wcConfig = std::make_unique<QByteArray>();
     auto jsonSeqs = object.object()["sequences"].toObject();
     if (kvConfig) {
-        auto kvConfig = KeyValueRoot();
-        kvConfig.Parse("\"Command Sequences\" {}");
-        //char* debugBuffer = kvConfig.ToString();
+        auto kvObj = KeyValueRoot("\"Command Sequences\" {}");
+        //char* debugBuffer = kvObj.ToString();
+        for (const auto keySequence : jsonSeqs.keys()) {
+            QJsonArray jsonCommands = jsonSeqs.value(keySequence).toArray();
+            auto kvNode = kvObj.AddNode(keySequence.toStdString().data());
 
+            for (const auto jsonCommand : jsonCommands) {
+                auto cmdObj = jsonCommand.toObject();
+                kvNode->Add("enabled",cmdObj["enabled"].toBool()?"1":"0");
+                kvNode->Add("run",cmdObj["command"].toString().toStdString().data());
+                kvNode->Add("params",cmdObj["parameters"].toString().toStdString().data());
+                kvNode->Add("ensure_check",cmdObj["ensured"].toBool()?"1":"0");
+                char str[std::numeric_limits<int>::digits10+2]{0};
+                sprintf(str, "%d", CocompilerSpecialToSourceSpecial(cmdObj["special"].toInt()));
+                kvNode->Add("special_cmd",str);
+                kvNode->Add("ensure_fn",cmdObj["ensure_file"].toString().toStdString().data());
+                kvNode->Add("no_wait",cmdObj["no_wait"].toBool()?"1":"0");
+            }
+        }
+        char* kvString = kvObj.ToString();
+        wcConfig->append(kvString);
     } else {
         //binary.
         wcConfig->reserve(1024*1024);

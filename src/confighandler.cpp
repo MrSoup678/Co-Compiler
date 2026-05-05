@@ -224,18 +224,22 @@ std::unique_ptr<QByteArray> CConfigHandler::ExportToWCConfig(const QJsonDocument
         for (const auto keySequence : jsonSeqs.keys()) {
             QJsonArray jsonCommands = jsonSeqs.value(keySequence).toArray();
             auto kvNode = kvObj.AddNode(keySequence.toStdString().data());
-
+            int idx=1;
             for (const auto jsonCommand : jsonCommands) {
                 auto cmdObj = jsonCommand.toObject();
-                kvNode->Add("enabled",cmdObj["enabled"].toBool()?"1":"0");
-                kvNode->Add("run",cmdObj["command"].toString().toStdString().data());
-                kvNode->Add("params",cmdObj["parameters"].toString().toStdString().data());
-                kvNode->Add("ensure_check",cmdObj["ensured"].toBool()?"1":"0");
+                char idxStr[4]{0};
+                sprintf(idxStr,"%d",idx);
+                auto cmdNode = kvNode->AddNode(idxStr);
+                cmdNode->Add("enabled",cmdObj["enabled"].toBool()?"1":"0");
+                cmdNode->Add("run",cmdObj["command"].toString().toStdString().data());
+                cmdNode->Add("params",cmdObj["parameters"].toString().toStdString().data());
+                cmdNode->Add("ensure_check",cmdObj["ensured"].toBool()?"1":"0");
                 char str[std::numeric_limits<int>::digits10+2]{0};
                 sprintf(str, "%d", CocompilerSpecialToSourceSpecial(cmdObj["special"].toInt()));
-                kvNode->Add("special_cmd",str);
-                kvNode->Add("ensure_fn",cmdObj["ensure_file"].toString().toStdString().data());
-                kvNode->Add("no_wait",cmdObj["no_wait"].toBool()?"1":"0");
+                cmdNode->Add("special_cmd",str);
+                cmdNode->Add("ensure_fn",cmdObj["ensure_file"].toString().toStdString().data());
+                cmdNode->Add("no_wait",cmdObj["no_wait"].toBool()?"1":"0");
+                idx++;
             }
         }
         char* kvString = kvObj.ToString();

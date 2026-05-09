@@ -355,14 +355,6 @@ void CMainWindow::runProcessQueue()
 
     QRegularExpression reg(R"(\s+(?=([^"]*"[^"]*")*[^"]*$))",QRegularExpression::PatternOptions::enum_type::ExtendedPatternSyntaxOption);
 
-    if(command->getSpecial() != SPECIAL_EXEC)
-    {
-        runSpecialCases(command->getArguments().split(reg).replaceInStrings("\"", ""), command->getArguments(),
-                        command->getSpecial());
-        return runProcessQueue();
-    }
-
-    m_pCurrentRunningProcess = new QProcess(this);
 
     QMap<QString, QString> replacements;
     replacements.insert(m_Variables);
@@ -370,16 +362,27 @@ void CMainWindow::runProcessQueue()
     replacements.insert(m_RuntimeVariables);
 
     auto commandStr = command->getCommand();
-    auto argumentsStr = command->getArguments();
+    //auto argumentsStr = command->getArguments();
+    QStringList arguments = command->getArguments().split(reg);
 
     for(const auto &key : replacements.keys())
     {
         commandStr = commandStr.replace(QRegularExpression(QRegularExpression::escape(key)), replacements[key]);
-        argumentsStr = argumentsStr.replace(QRegularExpression(QRegularExpression::escape(key)), replacements[key]);
+        //argumentsStr = argumentsStr.replace(QRegularExpression(QRegularExpression::escape(key)), replacements[key]); // bogus; breaks if replacements have spaces in them.
+        arguments = arguments.replaceInStrings(QRegularExpression(QRegularExpression::escape(key)), replacements[key]).replaceInStrings("//","/");
     }
 
+    if(command->getSpecial() != SPECIAL_EXEC)
+    {
+        runSpecialCases(arguments.replaceInStrings("\"", ""), command->getArguments(),
+                        command->getSpecial());
+        return runProcessQueue();
+    }
+
+    m_pCurrentRunningProcess = new QProcess(this);
+
     m_pCurrentRunningProcess->setProgram(commandStr);
-    m_pCurrentRunningProcess->setArguments(argumentsStr.split(reg).replaceInStrings("\"", ""));
+    m_pCurrentRunningProcess->setArguments(arguments.replaceInStrings("\"", ""));
     m_pCurrentRunningProcess->setProcessChannelMode(QProcess::MergedChannels);
     m_pCurrentRunningProcess->setWorkingDirectory(m_WorkDirectory);
 

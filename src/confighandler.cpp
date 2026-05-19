@@ -111,6 +111,35 @@ int CocompilerSpecialToSourceSpecial(int special)
 }
 
 
+int strataStringSpecialToCocompilerSpecial(QString strSpecial)
+{
+    if(strSpecial=="none")
+        return SPECIAL_EXEC;
+    else if (strSpecial=="copy_file")
+        return CC_SPECIAL_COPY_FILE;
+    else if (strSpecial=="copy_file_if_exists")
+        return CC_SPECIAL_COPY_FILE_IF_EXISTS;
+    else if (strSpecial=="delete_file")
+        return CC_SPECIAL_DELETE_FILE;
+    else if (strSpecial=="rename_file")
+        return CC_SPECIAL_RENAME_FILE;
+    else if (strSpecial=="change_dir")
+        return CC_SPECIAL_CHANGE_DIRECTORY;
+    return -1;
+}
+
+//https://stackoverflow.com/a/24315631
+static inline void ReplaceAll(std::string &str, const std::string& from, const std::string& to)
+{
+    size_t start_pos = 0;
+    while((start_pos = str.find(from, start_pos)) != std::string::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length(); // Handles case where 'to' is a substring of 'from'
+    }
+    //return str;
+}
+
+
 QJsonDocument CConfigHandler::ConvertBinaryToJSON(const char* data,bool isCSGO) {
 
     QJsonDocument document;
@@ -193,15 +222,27 @@ QJsonDocument CConfigHandler::ConvertTextToJSON(const char* data)
 
                 auto &configParams = sequence.At(j);
 
-                //TODO: change backslashes to forward slashes.
                 jsonSequenceObject.insert("enabled", configParams.Get("enabled").Value().string[0] == '1');
                 jsonSequenceObject.insert("command", configParams.Get("run").Value().string);
-                jsonSequenceObject.insert("parameters",configParams.Get("params").Value().string);
+                std::string argsStr = configParams.Get("params").Value().string;
+                ReplaceAll(argsStr,"\\","/");
+                jsonSequenceObject.insert("parameters",argsStr.data());
                 jsonSequenceObject.insert("ensured", configParams.Get("ensure_check").Value().string[0] == '1');
-                //STRATA: stoi will return 0 on none, its hammer will convert 0 to none back again. This may change without warning.
-                jsonSequenceObject.insert("special", SourceSpecialToCocompilerSpecial(std::stoi(configParams.Get("special_cmd").Value().string)));
+                try
+                {
+                    jsonSequenceObject.insert("special",std::stoi(configParams.Get("special_cmd").Value().string));
+                } catch (std::invalid_argument &e)
+                {
+                    //STRATA: Its cmdseq.wc uses strings.
+                    int specialCode = -1;
+                    specialCode = strataStringSpecialToCocompilerSpecial(configParams.Get("special_cmd").Value().string);
+                    if (specialCode == -1)
+                        throw e;
+                    jsonSequenceObject.insert("special",specialCode);
+                }
+
                 jsonSequenceObject.insert("ensure_file", configParams.Get("ensure_fn").Value().string);
-                jsonSequenceObject.insert("no_wait", false); //Strata does away with it, I do not, so false by default it is.
+                jsonSequenceObject.insert("no_wait", configParams.Get("no_wait").IsValid()?configParams.Get("no_wait").Value().string[0] == '1':false); //Strata does away with it, I do not, so false by default it is.
                 jsonSequenceArray.push_back(jsonSequenceObject);
             }
 
